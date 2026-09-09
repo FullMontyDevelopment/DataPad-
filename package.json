@@ -36,6 +36,7 @@
     "rust:check": "cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml",
     "rust:test": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
     "rust:test:fixtures": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --features live-fixtures",
+    "rust:test:fixtures:core": "node tests/fixtures/run-core-rust-tests.mjs",
     "rust:fmt": "cd apps/desktop/src-tauri && cargo fmt --check",
     "rust:clippy": "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings",
     "oracle:sidecar:test": "dotnet test apps/desktop/src-tauri/sidecars/oracle/tests/DataPadPlusPlus.OracleSidecar.Tests.csproj --configuration Release",

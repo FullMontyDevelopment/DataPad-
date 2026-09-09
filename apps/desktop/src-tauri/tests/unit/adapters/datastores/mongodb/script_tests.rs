@@ -1,6 +1,50 @@
 use super::*;
 
 #[test]
+fn preserves_computed_script_results_without_duplicating_operation_values() {
+    for value in [
+        json!({ "aborted": 0, "committed": 1 }),
+        json!(1),
+        Value::Null,
+    ] {
+        let run = ScriptRunOutput {
+            value: value.clone(),
+            records: (1..=2)
+                .map(|sequence| ScriptOperationRecord {
+                    sequence,
+                    method: "countDocuments".into(),
+                    database: Some("catalog".into()),
+                    collection: Some("products".into()),
+                    value: json!(sequence - 1),
+                    documents: None,
+                    mutation: false,
+                    duration_ms: 1,
+                })
+                .collect(),
+            console: "Committed documents: 1".into(),
+            console_truncated: false,
+            truncated: false,
+            open_transaction_aborted: false,
+        };
+        let result = build_script_result("mongodb", Instant::now(), Vec::new(), 25, run);
+        assert_eq!(result.payloads.len(), 1);
+        assert_eq!(result.payloads[0]["renderer"], "batch");
+        let distinct_result = value.is_object();
+        assert_eq!(
+            result.payloads[0]["sections"].as_array().unwrap().len(),
+            if distinct_result { 3 } else { 2 }
+        );
+        let rendered = crate::adapters::materialize_result_renderer(&result, "json").unwrap();
+        assert_eq!(
+            rendered["value"]["result"],
+            if value.is_null() { json!(1) } else { value }
+        );
+        assert_eq!(rendered["value"]["console"], "Committed documents: 1");
+        assert_eq!(rendered["value"]["operations"].as_array().unwrap().len(), 2);
+    }
+}
+
+#[test]
 fn renders_document_payloads_for_script_results() {
     let run = ScriptRunOutput {
         value: json!([{ "_id": 1, "name": "one" }]),

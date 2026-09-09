@@ -16,6 +16,22 @@ test('Tauri packages the managed Oracle runtime and license', () => {
   )
 })
 
+test('no-bundle desktop test builds still prepare the required external Oracle runtime', () => {
+  const config = JSON.parse(readFileSync(resolve(root, 'apps/desktop/src-tauri/tauri.e2e.conf.json'), 'utf8'))
+  assert.match(config.build.beforeBuildCommand, /oracle:sidecar:ensure.*npm run build/)
+})
+
+test('CI installs the sidecar prerequisites before deterministic tests and native smoke builds', () => {
+  const workflow = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8')
+  const [deterministic, native] = workflow.split('  deterministic-tests:')[1].split('  native-smoke:')
+  const dotnet = (job) => job.indexOf('uses: actions/setup-dotnet@')
+  assert.ok(dotnet(deterministic) >= 0)
+  assert.ok(deterministic.indexOf('npm run oracle:sidecar:ensure') > dotnet(deterministic))
+  assert.ok(deterministic.indexOf('npm run ci:test') > deterministic.indexOf('npm run oracle:sidecar:ensure'))
+  assert.ok(dotnet(native) >= 0)
+  assert.ok(native.indexOf('npm run e2e:desktop:build') > dotnet(native))
+})
+
 test('Oracle sidecar pins the managed driver and all release targets', () => {
   const project = readFileSync(
     resolve(root, 'apps/desktop/src-tauri/sidecars/oracle/DataPadPlusPlus.OracleSidecar.csproj'),

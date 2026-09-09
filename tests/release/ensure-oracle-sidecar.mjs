@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, rmSync, statSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import {
@@ -23,6 +24,8 @@ export function ensureOracleSidecar({
     return { prepared: false, destination: context.destination }
   }
 
+  // A clean checkout has no ignored publish directory yet.
+  mkdirSync(dirname(context.lockDir), { recursive: true })
   const startedAt = now()
   while (!tryAcquireLock(context.lockDir)) {
     if (!oracleSidecarNeedsBuild(context)) {

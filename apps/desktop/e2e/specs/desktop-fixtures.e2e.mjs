@@ -82,7 +82,7 @@ const CORE_CONNECTIONS = [
     database: 'catalog',
     username: 'datapadplusplus',
     secret: 'datapadplusplus',
-    expectedResult: 'document(s) returned from Fixture MongoDB',
+    expectedResult: 'document(s) loaded',
   },
   {
     name: 'Fixture Redis',
@@ -214,13 +214,19 @@ const CONNECTIONS = [
   ...PROFILE_CONNECTIONS.filter((connection) => fixtureProfileEnabled(connection.profile)),
 ]
 
+let applicationWindowAttached = false
+
 async function applicationWindows() {
   const currentHandle = await browser.getWindowHandle()
   const handles = await browser.getWindowHandles()
+  if (handles.length === 1 && applicationWindowAttached) {
+    return [{ handle: currentHandle, url: await browser.getUrl(), title: await browser.getTitle() }]
+  }
   const windows = []
 
   for (const handle of handles) {
     await browser.switchToWindow(handle)
+    applicationWindowAttached = true
     windows.push({
       handle,
       url: await browser.getUrl(),
@@ -238,7 +244,7 @@ async function selectApplicationWindow() {
     (window) => window.url !== 'about:blank' || window.title.length > 0,
   )
 
-  if (applicationWindow) {
+  if (applicationWindow && applicationWindow.handle !== await browser.getWindowHandle()) {
     await browser.switchToWindow(applicationWindow.handle)
   }
 
@@ -247,7 +253,7 @@ async function selectApplicationWindow() {
 
 async function appText() {
   await selectApplicationWindow()
-  return browser.execute(() => document.body.innerText)
+  return browser.execute(() => document.body?.innerText ?? '')
 }
 
 async function appBootstrapDiagnostics() {
@@ -295,26 +301,55 @@ async function expectNoText(text) {
 }
 
 async function clickControl(label) {
-  const clicked = await browser.execute((targetLabel) => {
+  const name = JSON.stringify(label)
+  const control = await browser.$(
+    `//*[self::button or @role="button" or @role="option"][@aria-label=${name} or @title=${name} or normalize-space(.)=${name}]`,
+  )
+  await control.waitForExist({ timeoutMsg: `Unable to find control "${label}"` })
+  // Native pointer events also blur the editor and flush its pending draft.
+  await control.scrollIntoView({ block: 'center', inline: 'nearest' })
+  // Library overflow buttons appear on keyboard focus as well as hover. Focus
+  // explicitly: embedded WebDriver hover is not implemented on every platform.
+  await browser.execute((targetLabel) => {
     const normalize = (value) => value?.replace(/\s+/g, ' ').trim() ?? ''
-    const controls = [...document.querySelectorAll('button, [role="button"], [role="option"]')]
-    const control = controls.find((element) => {
-      const accessible =
-        element.getAttribute('aria-label') ??
-        element.getAttribute('title') ??
-        normalize(element.textContent)
-      return accessible === targetLabel || normalize(element.textContent) === targetLabel
-    })
-
-    if (!control) {
-      return false
-    }
-
-    control.click()
-    return true
+    const item = [...document.querySelectorAll('button, [role="button"], [role="option"]')].find(
+      (element) => element.getAttribute('aria-label') === targetLabel
+        || element.getAttribute('title') === targetLabel || normalize(element.textContent) === targetLabel,
+    )
+    item?.focus()
   }, label)
+  await control.waitForDisplayed()
+  await control.waitForEnabled()
+  await control.click()
+}
 
-  assert.equal(clicked, true, `Unable to click control "${label}"`)
+async function setQueryEditorText(text) {
+  // Unscoped SQL tabs are already raw and intentionally have no mode switch.
+  if (await browser.$('button[aria-label="Raw"]').isExisting()) await clickControl('Raw')
+  // Wait for the lazy editor mount before editing a brand-new query tab.
+  const editor = await browser.$('.monaco-editor [aria-label="Query editor"]')
+  await editor.waitForDisplayed()
+  await editor.click()
+  // Set up the draft through Monaco's public editor API, which still fires the
+  // application's normal change handler. Embedded WebDriver character events
+  // do not reliably support Monaco's native EditContext. The assertions below
+  // exercise real persistence/execution rather than driver keyboard emulation.
+  const updated = await browser.execute((value) => {
+    const input = document.querySelector('.monaco-editor [aria-label="Query editor"]')
+    const instance = window.monaco?.editor.getEditors().find((candidate) => candidate.getDomNode()?.contains(input))
+    if (!instance) return false
+    instance.setValue(value)
+    instance.setPosition({ lineNumber: 1, column: value.length + 1 })
+    instance.focus()
+    return true
+  }, text)
+  assert.ok(updated, 'Expected the active Monaco query editor instance.')
+  await browser.waitUntil(async () => browser.execute((expected) => {
+    const lines = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+    const input = document.querySelector('textarea.editor-textarea[aria-label="Query editor"]')
+    const value = lines.length ? lines.map((line) => line.textContent).join('\n') : input?.value
+    return value?.replace(/\u00a0/g, ' ').trim() === expected
+  }, text), { timeoutMsg: 'Expected the query editor to retain the complete draft.' })
 }
 
 async function setField(label, value) {
@@ -350,46 +385,60 @@ async function setField(label, value) {
 }
 
 async function runActiveQuery(connection) {
-  await clickControl('Run query')
+  const redis = connection.engine === 'redis' || connection.engine === 'valkey'
+  if (redis) await clickControl('Redis Console')
+  await clickControl(redis ? 'Run Redis command' : 'Run query')
   await waitForText(connection.expectedResult, 60000)
 }
 
 async function activateSeededFixtureTab(connection) {
-  const activated = await browser.execute((connectionName) => {
-    const tabs = [...document.querySelectorAll(
-      '[role="tablist"][aria-label="Editor tabs"] [role="tab"]',
-    )]
-    const tab = tabs.find((candidate) => candidate.textContent?.includes(connectionName))
-    if (!(tab instanceof HTMLElement)) {
-      return false
-    }
-    tab.click()
-    return true
-  }, connection.name)
-  assert.equal(activated, true, `Unable to activate the ${connection.name} fixture tab.`)
+  const tab = await browser.$(
+    `//*[@role="tablist" and @aria-label="Editor tabs"]//*[@role="tab" and contains(normalize-space(.), ${JSON.stringify(connection.name)})]`,
+  )
+  await tab.waitForExist()
+  await tab.scrollIntoView({ block: 'nearest', inline: 'center' })
+  await tab.click()
   await browser.waitUntil(
     async () => browser.execute(
       (connectionName) => document.querySelector(
         '[role="tablist"][aria-label="Editor tabs"] [role="tab"][aria-selected="true"]',
-      )?.textContent?.includes(connectionName) ?? false,
+      )?.textContent?.includes(connectionName)
+        && document.querySelector('.editor-surface-context')?.textContent?.includes(connectionName),
       connection.name,
     ),
     { timeout: 20000, timeoutMsg: `Expected ${connection.name} to become the active tab.` },
   )
 }
 
-async function loadExplorerForActiveConnection() {
-  await clickControl('Explorer view')
-  await clickControl('Refresh explorer')
+async function showLibrary() {
+  if (!await browser.execute(() => Boolean(document.querySelector('.workbench-sidebar')))) {
+    await clickControl('Show Library')
+  }
+}
+
+async function loadExplorerForActiveConnection(connection) {
+  await showLibrary()
+  await clickControl(`Open actions for ${connection.name}`)
+  await clickControl(`Open Explorer for ${connection.name}`)
   await browser.waitUntil(
-    async () =>
-      browser.execute(() => document.querySelectorAll('.tree-item').length > 0),
+    async () => browser.execute((name) => {
+      const explorer = document.querySelector('.datastore-explorer-workspace, .mongo-explorer-workspace')
+      return explorer?.querySelector('h1, h2')?.textContent === name
+        && Boolean(explorer.querySelector('[role="treeitem"], .mongo-explorer-node'))
+    }, connection.name),
     {
       timeout: 60000,
       timeoutMsg: 'Expected explorer tree rows to load for the active connection.',
     },
   )
-  await clickControl('Connections view')
+  await clickControl('Refresh')
+  await browser.waitUntil(async () => browser.execute(() => {
+    const explorer = document.querySelector('.datastore-explorer-workspace, .mongo-explorer-workspace')
+    return Boolean(explorer?.querySelector('[role="treeitem"], .mongo-explorer-node'))
+      && !explorer.querySelector('[aria-busy="true"]')
+      && !explorer.querySelector('.datastore-explorer-workspace-error, .mongo-explorer-error')
+  }), { timeout: 60000, timeoutMsg: `Expected refreshed metadata for ${connection.name}.` })
+  await activateSeededFixtureTab(connection)
 }
 
 async function inspectWorkspaceExportDialog() {
@@ -398,7 +447,7 @@ async function inspectWorkspaceExportDialog() {
   await clickControl('Workspace + Backups')
   await waitForText('Workspace')
   await clickControl('Export')
-  await waitForText('Workspace Export')
+  await browser.$('[role="dialog"][aria-labelledby="workspace-export-dialog-title"]').waitForDisplayed()
   await setField('Passphrase', 'correct horse battery staple')
   await setField('Confirm passphrase', 'correct horse battery staple')
   const state = await browser.execute(() => {
@@ -456,24 +505,25 @@ async function setMultiWindowTabsEnabled(enabled) {
       timeoutMsg: `Expected Multi-window Tabs to become ${enabled ? 'enabled' : 'disabled'}.`,
     },
   )
+  await waitForText(enabled
+    ? 'Multi-window Tabs plugin enabled.'
+    : 'Tabs returned to the main window and the plugin was disabled.')
 }
 
 async function openActiveTabContextMenu() {
-  const opened = await browser.execute(() => {
-    const selectedTab = document.querySelector(
-      '[role="tablist"][aria-label="Editor tabs"] [role="tab"][aria-selected="true"]',
-    )
-    if (!selectedTab) {
-      return false
-    }
-    selectedTab.dispatchEvent(new MouseEvent('contextmenu', {
-      bubbles: true,
-      clientX: 240,
-      clientY: 100,
+  const tab = await browser.$('[role="tablist"][aria-label="Editor tabs"] [role="tab"][aria-selected="true"]')
+  await tab.scrollIntoView({ block: 'nearest', inline: 'center' })
+  await browser.execute(() => {
+    const selected = document.querySelector('[role="tablist"][aria-label="Editor tabs"] [role="tab"][aria-selected="true"]')
+    const bounds = selected.getBoundingClientRect()
+    selected.focus()
+    selected.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, button: 2,
+      clientX: bounds.left + bounds.width / 2,
+      clientY: bounds.top + bounds.height / 2,
     }))
-    return true
   })
-  assert.equal(opened, true, 'Unable to open the active tab context menu.')
+  await browser.$('[role="menu"]').waitForDisplayed()
 }
 
 describe('DataPad++ Tauri desktop fixtures', () => {
@@ -488,27 +538,63 @@ describe('DataPad++ Tauri desktop fixtures', () => {
     await expectNoText('No connections yet.')
   })
 
-  it('explores and executes against seeded MVP datastore fixtures', async () => {
-    for (const connection of CONNECTIONS) {
+  for (const connection of CONNECTIONS) {
+    it(`executes and explores the ${connection.engine} fixture`, async () => {
       await activateSeededFixtureTab(connection)
       await runActiveQuery(connection)
-      await loadExplorerForActiveConnection()
-    }
-  })
+      await loadExplorerForActiveConnection(connection)
+      if (connection.engine === 'redis' || connection.engine === 'valkey') {
+        // The console-mode draft is intentionally disposable. Close it through
+        // the real unsaved-work confirmation before measuring bulk-close later.
+        const count = await editorTabCount()
+        await browser.$('[role="tab"][aria-selected="true"] [aria-label^="Close tab "]').click()
+        await browser.waitUntil(async () => (await editorTabCount()) < count
+          || await browser.$('#close-tab-dialog-title').isExisting())
+        if (await browser.$('#close-tab-dialog-title').isExisting()) await clickControl('Discard Changes')
+        await browser.waitUntil(async () => (await editorTabCount()) === count - 1)
+      }
+    })
+  }
 
   it('saves real work and opens a secret-safe workspace export', async () => {
-    await clickControl('Library view')
-    await clickControl('Save current query to library')
+    await showLibrary()
+    await clickControl(`Open actions for ${CORE_CONNECTIONS[0].name}`)
+    await clickControl(`New Query for ${CORE_CONNECTIONS[0].name}`)
+    await setQueryEditorText('SELECT 1 AS fixture_saved;')
+    await openActiveTabContextMenu()
     await clickControl('Save')
-    await waitForText('Queries')
+    await waitForText('Save this item to the workspace Library')
+    await setField('Name', 'CI saved PostgreSQL query')
+    await clickControl('Save')
+    await waitForText('CI saved PostgreSQL query')
 
     await inspectWorkspaceExportDialog()
   })
 
   it('opens the visual Datastore Tests plugin editor for a fixture connection', async () => {
-    await clickControl('Library view')
+    await clickControl('Open settings')
+    await clickControl('Plugins')
+    // Plugins are deliberately disabled in the standard fixture workspace.
+    const enabled = await browser.execute(() => {
+      const card = [...document.querySelectorAll('.settings-plugin-card')].find(
+        (item) => item.querySelector('h4')?.textContent?.trim() === 'Datastore Tests',
+      )
+      const input = card?.querySelector('input[type="checkbox"]')
+      if (!(input instanceof HTMLInputElement)) return false
+      if (!input.checked) input.click()
+      return true
+    })
+    assert.ok(enabled, 'Expected the Datastore Tests plugin control.')
+    await waitForText('Datastore Tests plugin enabled.')
+    await clickControl('Close tab Settings')
+    await showLibrary()
     await clickControl('Open actions for Fixture SQLite')
     await clickControl('New Test Suite for Fixture SQLite')
+    await waitForText('Create target-bound test suite')
+    const databaseScope = await browser.$('.create-test-suite-database-target')
+    await databaseScope.waitForDisplayed()
+    await databaseScope.click()
+    await clickControl('Create Test Suite')
 
     await waitForText('Run Suite')
     await waitForText('Add Case')
@@ -518,16 +604,12 @@ describe('DataPad++ Tauri desktop fixtures', () => {
     await waitForText('Assertions')
     await expectNoText('Raw JSON')
 
-    const iconLabels = await browser.execute(() =>
-      [...document.querySelectorAll('[aria-label$=" icon"]')]
-        .map((element) => element.getAttribute('aria-label'))
-        .filter(Boolean),
-    )
-    assert.ok(iconLabels.includes('Test Suite icon'))
-    assert.ok(iconLabels.includes('Test Case icon'))
+    assert.ok(await browser.$('.test-suite-heading svg').isExisting())
+    assert.ok(await browser.$('button[aria-label^="Open test case "] svg').isExisting())
   })
 
   it('moves a working tab into a native editor window and returns it to main', async () => {
+    await activateSeededFixtureTab(CORE_CONNECTIONS[3])
     const mainHandle = await browser.getWindowHandle()
     const selectedTabTitle = await browser.execute(() =>
       document.querySelector(
@@ -542,6 +624,7 @@ describe('DataPad++ Tauri desktop fixtures', () => {
     await waitForText('Multi-window Tabs')
     await setMultiWindowTabsEnabled(true)
     await clickControl('Close tab Settings')
+    await activateSeededFixtureTab(CORE_CONNECTIONS[3])
 
     await openActiveTabContextMenu()
     await clickControl('Move to New Window')
@@ -554,7 +637,7 @@ describe('DataPad++ Tauri desktop fixtures', () => {
     assert.ok(editorHandle, 'Unable to identify the detached editor window.')
     await browser.switchToWindow(editorHandle)
     await browser.waitUntil(
-      async () => browser.execute((title) => document.body.innerText.includes(title), selectedTabTitle),
+      async () => browser.execute((title) => document.body?.innerText.includes(title) ?? false, selectedTabTitle),
       {
         timeout: 30000,
         timeoutMsg: 'Expected the moved tab to render in the detached editor window.',
@@ -574,7 +657,7 @@ describe('DataPad++ Tauri desktop fixtures', () => {
     })
     await browser.switchToWindow(mainHandle)
     await browser.waitUntil(
-      async () => browser.execute((title) => document.body.innerText.includes(title), selectedTabTitle),
+      async () => browser.execute((title) => document.body?.innerText.includes(title) ?? false, selectedTabTitle),
       {
         timeout: 30000,
         timeoutMsg: 'Expected the returned tab to be visible in the main window.',
@@ -589,6 +672,10 @@ describe('DataPad++ Tauri desktop fixtures', () => {
   })
 
   it('closes eligible tabs in one transition while a running tab remains usable', async () => {
+    // A fast seeded SELECT can finish before the menu opens. Use a bounded,
+    // genuinely running server query instead of depending on machine timing.
+    await activateSeededFixtureTab(CORE_CONNECTIONS[0])
+    await setQueryEditorText('SELECT pg_sleep(15), 1 AS fixture_bulk_close;')
     const initialTabCount = await editorTabCount()
     assert.ok(initialTabCount > 3, 'Expected several fixture tabs for bulk-close validation.')
 
@@ -607,27 +694,17 @@ describe('DataPad++ Tauri desktop fixtures', () => {
     })
 
     await clickControl('Run query')
-    const openedMenu = await browser.execute(() => {
-      const selectedTab = document.querySelector(
-        '[role="tablist"][aria-label="Editor tabs"] [role="tab"][aria-selected="true"]',
-      )
-      if (!selectedTab) {
-        return false
-      }
-      selectedTab.dispatchEvent(new MouseEvent('contextmenu', {
-        bubbles: true,
-        clientX: 200,
-        clientY: 100,
-      }))
-      return true
-    })
-    assert.equal(openedMenu, true, 'Unable to open the active tab context menu.')
+    await browser.waitUntil(async () => browser.execute(() =>
+      Boolean(document.querySelector('[role="tab"][aria-selected="true"].is-running')),
+    ), { timeout: 10000, timeoutMsg: 'Expected the delayed fixture query to be running.' })
+    await openActiveTabContextMenu()
     await clickControl('Close All')
 
     await browser.waitUntil(async () => (await editorTabCount()) === 1, {
       timeout: 30000,
       timeoutMsg: 'Expected all eligible tabs to close while the running tab remained.',
     })
+    await clickControl('Open the Messages panel and review command/runtime errors.')
     await waitForText('still open because its query is running or queued')
     const observedCounts = await browser.execute(() => {
       window.__datapadBulkCloseObserver?.disconnect()
@@ -662,6 +739,8 @@ describe('DataPad++ Tauri desktop fixtures', () => {
       return true
     })
     assert.equal(closedSurvivor, true, 'Unable to close the surviving unlocked tab.')
+    await waitForText('Save changes before closing?')
+    await clickControl('Discard Changes')
     await browser.waitUntil(async () => (await editorTabCount()) === 0, {
       timeout: 30000,
       timeoutMsg: 'Expected the surviving tab to close normally after it unlocked.',

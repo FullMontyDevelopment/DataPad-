@@ -90,7 +90,7 @@ Every pull request should run:
 
 The deterministic GitHub CI job must not require Docker, local database ports, desktop WebDriver, cloud credentials, or live datastore services. Its job summary reports executed, ignored, fixture-skipped, and failed counts separately. The separate `native-smoke` job owns the compiled desktop, test-only embedded WebDriver provider, isolated workspace, and SQLite file. The CI policy validator keeps those concerns out of the deterministic job and also prevents the native smoke job from quietly acquiring Docker dependencies.
 
-The separate Live Fixture Validation workflow runs the PostgreSQL, MongoDB, Redis, live Rust adapter evidence, and the compiled desktop fixture journeys under Xvfb when adapter or fixture code changes and on weekday schedules. Oracle paging and selected-schema completion run in an isolated weekly or manually selected job because Oracle Free has substantially higher startup and memory costs. Both jobs tear their containers down with unconditional cleanup steps.
+The separate Live Fixture Validation workflow starts PostgreSQL, MySQL, SQL Server, MongoDB, and Redis, runs the reference-engine validators and seven core Rust adapter tests, then executes the compiled desktop fixture journeys under Xvfb. It runs when adapter or fixture code changes and on weekday schedules. Each native build requires the .NET 10 SDK and preparation of the bundled Oracle runtime, even when the selected fixtures do not include an Oracle server. Oracle paging and selected-schema completion run in an isolated weekly or manually selected job because Oracle Free has substantially higher startup and memory costs. Both jobs tear their containers down with unconditional cleanup steps.
 
 ## Current Commands
 
@@ -132,11 +132,11 @@ Container-backed tests are intentionally opt-in:
 ```powershell
 npm run fixtures:up
 npm run fixtures:seed
-$env:DATAPADPLUSPLUS_FIXTURE_RUN='1'
-npm run rust:test:fixtures
+npm run oracle:sidecar:ensure
+npm run rust:test:fixtures:core
 ```
 
-The live tests are reported as ignored by the default `npm run rust:test` gate instead of being counted as successful without executing. `rust:test:fixtures` enables their compile-time fixture gate; `DATAPADPLUSPLUS_FIXTURE_RUN=1` and the selected profile still provide the runtime safety boundary. Profiles such as `cache`, `redis-stack`, `sqlplus`, `analytics`, `search`, `graph`, `widecolumn`, `oracle`, and `cloud-contract` can be enabled when testing those families. These tests must not be required by default CI.
+The live tests are reported as ignored by the default `npm run rust:test` gate instead of being counted as successful without executing. `rust:test:fixtures:core` runs only tests for the five core services, forwards generated port mappings, executes serially, and rejects missing or renamed test selections. `rust:test:fixtures` enables the entire live suite and requires all of its optional services to be started and seeded, along with `DATAPADPLUSPLUS_FIXTURE_RUN=1` and `DATAPADPLUSPLUS_FIXTURE_PROFILE=all`. Profiles include `cache`, `redis-stack`, `sqlplus`, `analytics`, `search`, `graph`, `widecolumn`, `oracle`, `cosmosdb`, and `cloud-contract`. These live tests must not be required by default deterministic CI.
 
 The PostgreSQL reference-engine fixture evidence path is:
 

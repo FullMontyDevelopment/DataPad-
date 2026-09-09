@@ -59,6 +59,7 @@ jobs:
             librsvg2-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \
+            libxdo-dev \
             pkg-config \
             wget \
             xvfb
@@ -72,6 +73,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install .NET
+        uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
       - name: Cache Rust artifacts
         uses: swatinem/rust-cache@v2.9.1
         with:
@@ -79,6 +85,11 @@ jobs:
 
       - name: Install workspace dependencies
         run: npm ci
+
+      - name: Prepare bundled Oracle runtime
+        run: |
+          npm run oracle:sidecar:ensure
+          npm run oracle:sidecar:smoke
 
       - name: Start and seed core fixtures
         run: |
@@ -92,7 +103,7 @@ jobs:
           npm run fixtures:validate:redis
 
       - name: Run live Rust adapter tests
-        run: npm run rust:test:fixtures
+        run: npm run rust:test:fixtures:core
 
       - name: Build native desktop fixture binary
         run: npm run e2e:desktop:build
@@ -135,6 +146,7 @@ jobs:
             librsvg2-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \
+            libxdo-dev \
             pkg-config \
             wget
 

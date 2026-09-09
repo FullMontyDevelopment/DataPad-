@@ -265,7 +265,7 @@ function createSidecarFixture() {
       licenseDestination,
       prepareScript,
       configScript,
-      lockDir: join(sidecarRoot, '.ensure.lock'),
+      lockDir: join(sidecarRoot, 'publish', '.ensure.lock'),
     },
   }
 }

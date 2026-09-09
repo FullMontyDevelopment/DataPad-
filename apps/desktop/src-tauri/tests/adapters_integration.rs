@@ -2828,33 +2828,23 @@ async fn mongodb_adapter_fixture_roundtrip() -> Result<(), CommandError> {
             payload.get("renderer").and_then(|value| value.as_str()) == Some("document")
         })
         .expect("document payload");
-    let json_payload = result
-        .payloads
-        .iter()
-        .find(|payload| payload.get("renderer").and_then(|value| value.as_str()) == Some("json"))
-        .expect("json payload");
-    let raw_payload = result
-        .payloads
-        .iter()
-        .find(|payload| payload.get("renderer").and_then(|value| value.as_str()) == Some("raw"))
-        .expect("raw payload");
     let documents = document_payload
         .get("documents")
         .and_then(|value| value.as_array())
         .expect("document rows");
-    let json_documents = json_payload
-        .get("value")
-        .and_then(|value| value.as_array())
-        .expect("json document rows");
-    let raw_text = raw_payload
-        .get("text")
-        .and_then(|value| value.as_str())
-        .expect("raw document text");
-
     assert!(!documents.is_empty());
-    assert_eq!(json_documents.len(), documents.len());
-    assert!(raw_text.contains("sku") || raw_text.contains("_id"));
-    assert!(!raw_text.contains("\"collection\": \"products\""));
+    // Alternate renderers derive from the shared document payload in the UI;
+    // duplicating full JSON/raw payloads here would inflate every result.
+    assert_eq!(result.payloads.len(), 1);
+    for renderer in ["document", "json", "table", "raw"] {
+        assert!(result.renderer_modes.iter().any(|mode| mode == renderer));
+    }
+    assert!(documents
+        .iter()
+        .all(|document| document.get("_id").is_some()));
+    assert!(documents
+        .iter()
+        .any(|document| document.get("sku").is_some()));
 
     let target_document = documents
         .iter()
@@ -3339,14 +3329,17 @@ print("Committed documents:", committedCount);
     script_request.execution_input_mode = Some("script".into());
     script_request.script_text = Some(script);
     let script_result = adapters::execute(&connection, &script_request, Vec::new()).await?;
-    let script_json = script_result
+    let script_batch = script_result
         .payloads
         .iter()
-        .find(|payload| payload.get("renderer").and_then(|value| value.as_str()) == Some("json"))
-        .expect("MongoDB script JSON result");
-    assert_eq!(script_json["value"]["result"]["aborted"], 0);
-    assert_eq!(script_json["value"]["result"]["committed"], 1);
-    assert!(script_json["value"]["console"]
+        .find(|payload| payload["renderer"] == "batch")
+        .expect("MongoDB script batch result");
+    let final_section = script_batch["sections"].as_array().unwrap().last().unwrap();
+    assert_eq!(final_section["id"], "mongodb-script-result");
+    let script_json = &final_section["payloads"][0]["value"];
+    assert_eq!(script_json["aborted"], 0);
+    assert_eq!(script_json["committed"], 1);
+    assert!(script_batch["console"]
         .as_str()
         .is_some_and(|console| console.contains("Committed documents: 1")));
     let _ = client

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { validateLiveFixturesWorkflow } from './validate-live-fixtures-workflow.mjs'
@@ -9,6 +9,26 @@ test('current live fixture workflow keeps core and Oracle evidence isolated', ()
   const result = validateLiveFixturesWorkflow(process.cwd())
   assert.match(result.path, /live-fixtures\.yml$/)
 })
+
+for (const [description, mutate] of [
+  ['missing sidecar preparation', (text) => text.replace('npm run oracle:sidecar:ensure', 'echo omitted')],
+  ['sidecar preparation after Rust tests', (text) => text
+    .replace('npm run oracle:sidecar:ensure', 'SWAP')
+    .replace('npm run rust:test:fixtures:core', 'npm run oracle:sidecar:ensure')
+    .replace('SWAP', 'npm run rust:test:fixtures:core')],
+  ['missing core .NET installation', (text) => text.replace('uses: actions/setup-dotnet@', 'uses: missing/setup-dotnet@')],
+  ['unfiltered optional-service tests', (text) => text.replace('rust:test:fixtures:core', 'rust:test:fixtures')],
+  ['missing Linux linker library', (text) => text.replace('libxdo-dev', 'missing-library')],
+]) {
+  test(`live fixture workflow rejects ${description}`, (t) => {
+    const root = mkdtempSync(join(tmpdir(), 'datapad-live-workflow-'))
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    mkdirSync(join(root, '.github', 'workflows'), { recursive: true })
+    const current = readFileSync(join(process.cwd(), '.github', 'workflows', 'live-fixtures.yml'), 'utf8')
+    writeFileSync(join(root, '.github', 'workflows', 'live-fixtures.yml'), mutate(current))
+    assert.throws(() => validateLiveFixturesWorkflow(root), /Core fixtures must/)
+  })
+}
 
 test('live fixture workflow validator rejects cleanup that is not unconditional', () => {
   const root = mkdtempSync(join(tmpdir(), 'datapadplusplus-live-fixtures-'))

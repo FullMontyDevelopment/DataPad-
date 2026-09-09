@@ -184,8 +184,29 @@ fn build_script_result(
         .map(operation_metadata)
         .collect::<Vec<_>>();
     let batch = (run.records.len() > 1).then(|| {
+        let mut sections = run.records.iter().map(batch_record).collect::<Vec<_>>();
+        // A script can compute its final expression from several operations.
+        // Keep that value without duplicating the last operation's payload.
+        if run
+            .records
+            .last()
+            .is_some_and(|record| record.value != final_value)
+        {
+            sections.push(batch_section(BatchSectionPayload {
+                id: "mongodb-script-result".into(),
+                label: "Script result".into(),
+                statement: None,
+                status: "success",
+                duration_ms: None,
+                row_count: Some(1),
+                default_renderer: "json".into(),
+                renderer_modes: vec!["json".into()],
+                payloads: vec![payload_json(final_value.clone())],
+                notices: Vec::new(),
+            }));
+        }
         let mut payload = payload_batch(
-            run.records.iter().map(batch_record).collect(),
+            sections,
             format!(
                 "{} MongoDB script operation(s) completed.",
                 run.records.len()

@@ -38,6 +38,16 @@ export function validateLiveFixturesWorkflow(repoRoot = process.cwd()) {
     throw new Error('Every live fixture job must retain an unconditional cleanup step')
   }
 
+  const coreJob = text.split('  core-fixtures:')[1]?.split('\n  oracle-fixture:')[0] ?? ''
+  const dotnet = coreJob.indexOf('uses: actions/setup-dotnet@')
+  const prepare = coreJob.indexOf('npm run oracle:sidecar:ensure')
+  const tests = coreJob.indexOf('npm run rust:test:fixtures:core')
+  const build = coreJob.indexOf('npm run e2e:desktop:build')
+  if (dotnet < 0 || prepare < dotnet || tests < prepare || build < tests) {
+    throw new Error('Core fixtures must install .NET, prepare the bundled Oracle runtime, run core Rust tests, then build the desktop')
+  }
+  requireMatch(coreJob, /libxdo-dev/, 'Core fixtures must install the Linux desktop linker dependencies')
+
   return { path }
 }
 
